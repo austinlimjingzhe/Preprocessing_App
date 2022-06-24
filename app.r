@@ -7,6 +7,7 @@ library(shinythemes)
 library(DT)
 library(DataExplorer)
 library(tidyverse)
+library(RColorBrewer)
 library(DescTools)
 library(Hmisc)
 library(e1071)
@@ -36,7 +37,9 @@ ui <- fluidPage(theme = shinythemes::shinytheme("cerulean"),
                                                               selected = ",")),
                                     mainPanel(dataTableOutput("dataset"),
                                               hr(),
-                                              tableOutput("structure"),
+                                              plotOutput("structure"),
+                                              uiOutput("datadensity"),
+                                              uiOutput("databars"),
                                               style="overflow-x: scroll")),
                            tabPanel("Convert Data Types",
                                     sidebarPanel(div(strong("Control Panel"),style="text-align:center"),
@@ -119,8 +122,8 @@ ui <- fluidPage(theme = shinythemes::shinytheme("cerulean"),
                                     mainPanel(dataTableOutput("PostTransform"),
                                               hr(),
                                               style="overflow-x: scroll",
-                                              fluidRow(column(12,plotOutput("histograms")),
-                                                       column(12,plotOutput("frequencies"))))),
+                                              fluidRow(column(12,uiOutput("histograms")),
+                                                       column(12,uiOutput("frequencies"))))),
                            tabPanel("Advanced Options",
                                     tabsetPanel(type="tabs",
                                                 tabPanel("Advanced Imputation",
@@ -233,6 +236,36 @@ server <- function(input, output, session) {
                      header = input$header,
                      sep = input$sep,
                      stringsAsFactors = input$stringfactor)
+    
+    explore<-split_columns(v$df,binary_as_factor = T)
+    pagesDensity<-ceiling(explore$num_continuous/16)
+    pagesBars<-ceiling(explore$num_discrete/9)
+    
+    output$datadensity<-renderUI({
+      lapply(1:pagesDensity, function(i){
+        desityId <- paste0("densityplot_", i)
+        plotOutput(desityId)
+      
+        output[[desityId]]<-renderPlot({
+          pagenum<-paste0("page_",i)
+          plottitle<-paste("Density Plots Page",i)
+          return(plot_density(v$df,title = plottitle, theme_config=list("plot.title" = element_text(hjust = 0.5)))[[pagenum]])
+        })
+      })
+    })
+    
+    output$databars<-renderUI({
+      lapply(1:pagesBars, function(i){
+        barId <- paste0("barplot_", i)
+        plotOutput(barId)
+        
+        output[[barId]]<-renderPlot({
+          pagenum<-paste0("page_",i)
+          plottitle<-paste("Bar Plots Page",i)
+          return(plot_bar(v$df,title = plottitle, theme_config=list("plot.title" = element_text(hjust = 0.5)))[[pagenum]])
+        })
+      })
+    })
   })
 
   output$dataset <- renderDataTable({
@@ -240,13 +273,22 @@ server <- function(input, output, session) {
     return(v$df)
   })
   
-  output$structure<-renderTable({
+  output$structure<-renderPlot({
     req(v$df)
-    struct<-data.frame(name=names(v$df),
-                       class=sapply(v$df,class),
-                       missing=colSums(is.na(v$df)),
-                       row.names = NULL)
-    return(struct)
+    df<-profile_missing(v$df)
+    df$class=sapply(v$df,class)
+    df$class=ordered(df$class,levels=unique(df$class))
+    
+    gg<-ggplot(df,aes(y=reorder(feature,as.numeric(class)),x=num_missing,fill=class))+
+      geom_bar(stat = "identity")+
+      ylab("Feature")+
+      xlab("Missing rows")+
+      ggtitle("Missingness Plot")+
+      geom_label(aes(label=round(pct_missing,2)))+
+      scale_fill_brewer(palette="Pastel1")+
+      theme(legend.position="bottom",
+            plot.title = element_text(hjust = 0.5))
+    return(gg)
   })
   
   #convert variables
@@ -515,8 +557,6 @@ server <- function(input, output, session) {
     }
   })
   
-  
-  
   results<-reactiveValues(df=NULL)
   observeEvent(input$wrangleData,{
     req(v$df)
@@ -695,18 +735,43 @@ server <- function(input, output, session) {
       v$df<-v$df%>%
         mutate(across(input$CategoricalColumns,~plyr::mapvalues(.x,from=before,to=rep(input$CategoryAfter,length(before)))))
     }
-    
-    output$histograms<-renderPlot({
-      plot_histogram(v$df,title = "Histogram of All Continuous Variables")
-    })
-    output$frequencies<-renderPlot({
-      plot_bar(v$df,binary_as_factor = F,title = "Frequency Plots of All Categorical Variables")
-    })
   })
   
   output$PostTransform<-renderDataTable({
     req(v$df)
     return(v$df)
+  })
+  
+  output$histograms<-renderUI({
+    explore<-split_columns(v$df,binary_as_factor = T)
+    pagesHistogram<-ceiling(explore$num_continuous/16)
+    
+    lapply(1:pagesHistogram, function(i){
+      histId <- paste0("histplot_", i)
+      plotOutput(histId)
+      
+      output[[histId]]<-renderPlot({
+        pagenum<-paste0("page_",i)
+        plottitle<-paste("Histograms Page",i)
+        return(plot_histogram(v$df,title = plottitle, theme_config=list("plot.title" = element_text(hjust = 0.5)))[[pagenum]])
+      })
+    })
+  })
+  
+  output$frequencies<-renderUI({
+    explore<-split_columns(v$df,binary_as_factor = T)
+    pagesFrequencies<-ceiling(explore$num_discrete/9)
+    
+    lapply(1:pagesFrequencies, function(i){
+      freqId <- paste0("freqplot_", i)
+      plotOutput(freqId)
+      
+      output[[freqId]]<-renderPlot({
+        pagenum<-paste0("page_",i)
+        plottitle<-paste("Frequency Plots Page",i)
+        return(plot_bar(v$df,title = plottitle, theme_config=list("plot.title" = element_text(hjust = 0.5)))[[pagenum]])
+      })
+    })
   })
   
   output$DLTransform <- downloadHandler(
@@ -1144,7 +1209,6 @@ server <- function(input, output, session) {
     }  
     else{
       if(length(input$datetimeColumns)==2){
-        #duration=paste0(input$datetimeColumns[1],"_",input$datetimeColumns[2],"_diff")
         v$df<-v$df%>%
           mutate(duration=as.numeric(abs(difftime(v$df[[input$datetimeColumns[1]]],v$df[[input$datetimeColumns[2]]])),units=input$timeunits))
       }
@@ -1164,4 +1228,3 @@ server <- function(input, output, session) {
 }
 
 shinyApp(ui,server)
-
